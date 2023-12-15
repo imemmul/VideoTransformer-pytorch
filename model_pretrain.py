@@ -175,8 +175,8 @@ def single_run():
 			   f'multi_crop_{args.multi_crop}_auto_augment_{args.auto_augment}_')
 	ckpt_dir = os.path.join(ROOT_DIR, f'results/{exp_tag}/ckpt')
 	log_dir = os.path.join(ROOT_DIR, f'results/{exp_tag}/log')
-	os.makedirs(ckpt_dir, exist_ok=True)
-	os.makedirs(log_dir, exist_ok=True)
+	os.makedirs("ckpt_dir", exist_ok=True)
+	os.makedirs("log_dir", exist_ok=True)
 
 	# Data
 	do_eval = True if args.val_data_path is not None else False
@@ -211,6 +211,15 @@ def single_run():
 		log_every_n_steps=args.log_interval,
 		progress_bar_refresh_rate=args.log_interval,
 		flush_logs_every_n_steps=args.log_interval*5)
+	# trainer = pl.Trainer(
+	# 		precision=16,
+	# 		plugins=[DDPPlugin(find_unused_parameters=find_unused_parameters),],
+	# 		max_epochs=args.epoch,
+	# 		callbacks=[
+	# 			LearningRateMonitor(logging_interval='step'),
+	# 		],
+	# 		check_val_every_n_epoch=1,
+	# 		log_every_n_steps=args.log_interval)
 		
 	# To be reproducable
 	torch.random.manual_seed(args.seed)

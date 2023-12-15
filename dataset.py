@@ -50,7 +50,7 @@ def load_annotation_data(data_file_path):
 		return json.load(data_file)
 
 
-def get_class_labels(num_class, anno_pth='./k400_classmap.json'):
+def get_class_labels(num_class, anno_pth='./etf_classmap.json'):
 	global class_labels_map, cls_sample_cnt
 	
 	if class_labels_map is not None:
@@ -78,6 +78,7 @@ def load_annotations(ann_file, num_class, num_samples_per_cls):
 								
 			# idx for label[s]
 			label = [x for x in line_split[idx:]]
+			print()
 			assert label, f'missing label in line: {line}'
 			assert len(label) == 1
 			class_name = label[0]
@@ -118,8 +119,7 @@ class DecordInit(object):
 					f'num_threads={self.num_threads})')
 		return repr_str
 
-
-class Kinetics(torch.utils.data.Dataset):
+class ETF(torch.utils.data.Dataset):
 	"""Load the Kinetics video files
 	
 	Args:
@@ -193,6 +193,97 @@ class Kinetics(torch.utils.data.Dataset):
 				start_frame, span_frame = marker
 				center_index = start_frame*2 + span_frame*2//2 # fix the temporal stride to 2
 				hog_features[center_index] = extract_hog_features(hog_inputs[center_index])
+			label = hog_features
+		else:
+			label = self.data[index]['label']
+		
+		if self.objective == 'mim':
+			if self.transform is not None:
+				video = post_transform(video) # to tensor & norm
+			return video, numpy2tensor(label), numpy2tensor(mask), cube_marker
+		else:
+			return video, label
+
+	def __len__(self):
+		return len(self.data)
+
+
+class Kinetics(torch.utils.data.Dataset):
+	"""Load the Kinetics video files
+	
+	Args:
+		annotation_path (string): Annotation file path.
+		num_class (int): The number of the class.
+		num_samples_per_cls (int): the max samples used in each class.
+		target_video_len (int): the number of video frames will be load.
+		align_transform (callable): Align different videos in a specified size.
+		temporal_sample (callable): Sample the target length of a video.
+	"""
+
+	def __init__(self,
+				 configs,
+				 annotation_path,
+				 transform=None,
+				 temporal_sample=None):
+		self.configs = configs
+		self.data = load_annotations(annotation_path, self.configs.num_class, self.configs.num_samples_per_cls)
+
+		self.transform = transform
+		self.temporal_sample = temporal_sample
+		self.target_video_len = self.configs.num_frames
+		self.objective = self.configs.objective
+		self.v_decoder = DecordInit()
+
+		# mask
+		if self.objective == 'mim':
+			self.mask_generator = CubeMaskGenerator(input_size=(self.target_video_len//2,14,14),min_num_patches=16)
+
+	def __getitem__(self, index):
+		while True:
+			try:
+				path = self.data[index]['video']
+				v_reader = self.v_decoder(path)
+				total_frames = len(v_reader)
+				
+				# Sampling video frames
+				start_frame_ind, end_frame_ind = self.temporal_sample(total_frames)
+				assert end_frame_ind-start_frame_ind >= self.target_video_len
+				frame_indice = np.linspace(start_frame_ind, end_frame_ind-1, self.target_video_len, dtype=int)
+				video = v_reader.get_batch(frame_indice).asnumpy()
+				del v_reader
+				break
+			except Exception as e:
+				print(e)
+				index = random.randint(0, len(self.data) - 1)
+		
+		# Video align transform: T C H W
+		with torch.no_grad():
+			video = torch.from_numpy(video).permute(0,3,1,2)
+			if self.transform is not None:
+				if self.objective == 'mim':
+					pre_transform, post_transform = self.transform
+					video = pre_transform(video) # align shape
+				else:
+					video = self.transform(video)
+
+		# Label (depends)
+		if self.objective == 'mim':
+			# old version
+			'''
+			mask, cube_marker = self.mask_generator() # T' H' W'
+			label = np.stack(list(map(extract_hog_features, video.permute(0,2,3,1).numpy())), axis=0) # T H W C -> T H' W' C'
+			'''
+			# new version
+			mask, cube_marker = self.mask_generator() # T' H' W'
+			print(f"video shape: {video.shape}") # (16, 3, 64, 64)
+			hog_inputs = video.permute(0,2,3,1).numpy()
+			print(f"hogs: {hog_inputs.shape}") # (16, 64, 64, 3)
+			hog_features = np.zeros((self.target_video_len,14,14,2*2*3*9))
+			# speed up the extraction of hog features
+			for marker in cube_marker: # [[start, span]]
+				start_frame, span_frame = marker
+				center_index = start_frame*2 + span_frame*2//2 # fix the temporal stride to 2
+				hog_features[center_index] = extract_hog_features(hog_inputs[center_index]) # this gives error ???
 			label = hog_features
 		else:
 			label = self.data[index]['label']
